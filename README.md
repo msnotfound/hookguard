@@ -154,5 +154,3 @@ frontend/          React + Vite product console
 docs/              Project report and OpenAPI contract
 test/              Domain unit tests
 ```
-
-The complete major-project report is in [`docs/PROJECT_REPORT.md`](docs/PROJECT_REPORT.md).
