@@ -1,0 +1,85 @@
+openapi: 3.1.0
+info:
+  title: HookGuard Event API
+  version: 1.0.0
+  description: Submit events for durable, asynchronous, signed webhook delivery.
+servers:
+  - url: http://127.0.0.1:3000
+    description: Local HookGuard API
+security:
+  - bearerApiKey: []
+paths:
+  /v1/events:
+    post:
+      summary: Submit an event
+      description: >-
+        Persists an event and transactional outbox record, then returns without
+        waiting for the destination. Reusing an idempotency key for the same
+        endpoint returns the existing event.
+      operationId: createEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEventRequest'
+            example:
+              endpointId: demo-receiver
+              idempotencyKey: invoice:inv_01HT9K
+              payload:
+                event: invoice.paid
+                invoiceId: inv_01HT9K
+      responses:
+        '202':
+          description: Event accepted for asynchronous delivery.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, createdAt]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [queued]
+                  createdAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: Invalid event request.
+        '401':
+          description: Missing or invalid API key.
+        '404':
+          description: Endpoint does not exist.
+        '409':
+          description: Endpoint is paused.
+        '413':
+          description: Request body exceeds 1 MB.
+components:
+  securitySchemes:
+    bearerApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: HookGuard API key
+  schemas:
+    CreateEventRequest:
+      type: object
+      required: [endpointId, payload]
+      additionalProperties: false
+      properties:
+        endpointId:
+          type: string
+          minLength: 1
+          description: ID of a configured, active endpoint.
+        idempotencyKey:
+          type: string
+          maxLength: 120
+          description: Optional key that prevents duplicate event creation per endpoint.
+        maxAttempts:
+          type: integer
+          minimum: 1
+          maximum: 8
+          description: Optional retry limit override for this event.
+        payload:
+          description: JSON value delivered to the configured endpoint.

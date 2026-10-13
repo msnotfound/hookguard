@@ -1,0 +1,41 @@
+{
+  "name": "hookguard",
+  "version": "1.0.0",
+  "description": "Reliable webhook delivery and replay system with Express, PostgreSQL, Redis, BullMQ, React and Vite.",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n api,worker,web -c blue,green,magenta \"npm:dev:api\" \"npm:dev:worker\" \"npm:dev:web\"",
+    "dev:api": "node --watch backend/api/server.js",
+    "dev:worker": "node --watch backend/worker/worker.js",
+    "dev:web": "vite --host 127.0.0.1",
+    "start": "concurrently -n api,worker -c blue,green \"npm:start:api\" \"npm:start:worker\"",
+    "start:api": "node backend/api/server.js",
+    "start:worker": "node backend/worker/worker.js",
+    "build": "vite build",
+    "db:migrate": "node backend/shared/migrate.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@fontsource/dm-mono": "^5.3.0",
+    "@fontsource/dm-sans": "^5.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "bullmq": "^6.3.14",
+    "concurrently": "^10.0.6",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.7",
+    "express": "^5.3.0",
+    "ioredis": "^6.0.0",
+    "ipaddr.js": "^2.5.0",
+    "nanoid": "^6.0.2",
+    "pg": "^8.23.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "undici": "^8.11.2",
+    "vite": "^8.3.4",
+    "zod": "^4.6.7"
+  }
+}
