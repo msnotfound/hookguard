@@ -182,15 +182,15 @@ The main integration route is **POST /v1/events**. Dashboard and demo routes inc
 
 ## 8. Running the project
 
-Requirements are Node.js 22.19 or newer, Docker Compose, and available local ports 3000, 5173, 5432, and 6379. From the project root:
+Requirements are Node.js 22.19 or newer, Docker Compose, and available local ports 3000, 5173, 5432, and 6379. From the project root, create `.env` from `.env.example` and set a unique `HOOKGUARD_SECRET_KEY` before the first application start. Keep that key stable while endpoint secrets exist in the database. The README has the full fresh-machine clone and setup steps.
 
     cp .env.example .env
     npm ci
-    docker compose up -d
+    docker compose up -d --wait
     npm run db:migrate
     npm run dev
 
-Open **http://127.0.0.1:5173**. Development starts the API, worker, and frontend as separate processes. For a production-style local build, run **npm run build** and then **npm start**; the API serves the compiled frontend at **http://127.0.0.1:3000**.
+Open **http://127.0.0.1:5173**. Development starts the API, worker, and frontend as separate processes. Stop these processes with Ctrl+C, then stop PostgreSQL and Redis with `docker compose down`; this preserves the database volume. For a production-style local build, run **npm run build** and then **npm start**; the API serves the compiled frontend at **http://127.0.0.1:3000**.
 
 Before sharing the service, set unique values for **HOOKGUARD_API_KEY**, **HOOKGUARD_SECRET_KEY**, and **DEMO_WEBHOOK_SECRET** in the environment. Keep the encryption key backed up and stable. Do not treat the default local credentials as deployment secrets.
 
@@ -200,7 +200,241 @@ HookGuard durably accepts an event before acknowledging it, keeps the delivery a
 
 HookGuard does not guarantee exactly-once HTTP delivery, exactly-once side effects, or successful delivery when a receiver remains unavailable. A receiver should validate signatures, reject stale timestamps, and use the event ID or idempotency key when applying business changes. The dashboard has no user authentication, and the project is not a hosted multi-tenant service.
 
-## 10. Key terms
+## 10. Ten-minute presentation script
+
+This script follows the current 20-slide deck. The time ranges add up to ten minutes and follow the deck's planned pace: one minute for the introduction, one and a half minutes for the literature review, three minutes for methodology, three minutes for results, and one and a half minutes for the close. Speak at a measured pace and use the slide visuals instead of reading every bullet. Slide 20 is a viva backup slide and is not part of the ten-minute talk.
+
+Before presenting, replace `[Guide Name]` on slide 1. Slide 18 is currently blank. Add the future-scope bullets suggested in that part of this script, or remove the blank slide and adjust the last segment's timing.
+
+### Introduction, 0:00 to 1:00
+
+**Slide 1, 0:00 to 0:20**
+
+Good morning. I am Nivedita Dewangan, a B. Tech student in CSE-CTIS at ITM University. My major project is HookGuard, a self-hosted platform for reliable webhook delivery, retry, inspection, and replay.
+
+**Slide 2, 0:20 to 1:00**
+
+Webhooks let one application notify another when something happens. The difficulty is that the receiver may be offline, slow, or may process a request while the sender times out. HookGuard addresses this uncertainty by storing an event before delivery, sending it asynchronously, and keeping an attempt history. The goal is recoverable at-least-once delivery, not a claim of exactly-once processing.
+
+### Literature review, 1:00 to 2:30
+
+**Slide 3, 1:00 to 1:45**
+
+The reliability part of the literature review informed four design choices. The transactional outbox pattern keeps the event and its queue intent in one database transaction. Idempotency keys help prevent duplicate event creation. Bounded exponential backoff with jitter spaces out retries. BullMQ provides runnable and delayed jobs. These references guide the design; they are not experimental results from HookGuard.
+
+**Slide 4, 1:45 to 2:30**
+
+The security and HTTP references informed the other controls. HMAC authenticates the request bytes, timestamps limit the useful lifetime of an old signature, and receiver-side deduplication handles repeated delivery. SSRF guidance leads us to validate external destinations and resolved IP addresses. Finally, HTTP 202 means accepted for processing, not already delivered. These controls are implemented design choices, not a security certification.
+
+### Problem and methodology, 2:30 to 5:30
+
+**Slide 5, 2:30 to 3:00**
+
+The problem is uncertainty during receiver failures. The objectives are to accept events durably, deliver them without holding the producer request open, retry within clear limits, protect outbound requests, and give an operator a history and replay path. The current scope is a local, single-workspace product.
+
+**Slide 6, 3:00 to 3:30**
+
+The implementation has a React and Vite console, an Express API, PostgreSQL, Redis with BullMQ, a separate Node worker, and a signed receiver. PostgreSQL is the source of truth for events and attempts. Redis and BullMQ coordinate work between the publisher and worker.
+
+**Slide 7, 3:30 to 4:30**
+
+Here is the delivery lifecycle. A producer submits JSON with an endpoint and idempotency key. The API validates the request and commits the event with an outbox row in PostgreSQL, then returns 202. The publisher locks pending outbox rows and creates stable BullMQ jobs. A worker claims the current event run, signs the exact body, and sends a timed HTTP request. It then records the response and either completes the event, schedules a retry, or marks it failed. Stale claims can be recovered after a worker interruption.
+
+**Slide 8, 4:30 to 5:00**
+
+The separation of responsibilities is deliberate. PostgreSQL stores endpoints, events, attempts, and outbox intent. Redis holds work that is ready or delayed. The worker performs network delivery. The dashboard has no user login, so this project is a local demonstration and needs additional access control before use by other users.
+
+**Slide 9, 5:00 to 5:30**
+
+The verification protocol covers the production build, database migrations, service health, and the intended order-to-retry-to-replay behavior. Build, migration, syntax, and health checks have been completed. The full browser-driven recovery scenario has not been rerun, so I will distinguish that remaining check from verified results.
+
+### Results and discussion, 5:30 to 8:30
+
+**Slide 10, 5:30 to 5:55**
+
+The product surface gives an operator an overview, endpoint controls, event search, failure simulation, and demo integrations. The console is intended to make delivery state visible, rather than hiding retries inside a background process.
+
+**Slide 11, 5:55 to 6:20**
+
+The transactional handoff is the main reliability result. An accepted event and its queue intent are committed together. Each attempt is stored separately. Replay creates a new run and keeps the earlier timeline, which helps an operator compare the original failure with recovery.
+
+**Slide 12, 6:20 to 6:45**
+
+Temporary failures use bounded exponential backoff with jitter. If all configured attempts fail, the event remains in the database in the failed state for inspection and replay. Stale worker claims are requeued. Because the original HTTP request may have reached the receiver before a worker failure, duplicate requests remain possible.
+
+**Slide 13, 6:45 to 7:10**
+
+Outbound requests use timestamped HMAC-SHA256 over the timestamp and raw JSON bytes. Endpoint secrets are encrypted at rest. External destinations require HTTPS, are checked against private or reserved addresses, and are not followed through redirects. The local dashboard still lacks user authentication, which is an important deployment limitation.
+
+**Slide 14, 7:10 to 7:45**
+
+The build completed, the database migration applied, and the local health endpoint reported the API, PostgreSQL, Redis, and worker as healthy. The full browser flow remains to be rerun. I have not measured throughput or delivery rates, so I do not make performance claims. The deployment is a local demo, not a hosted multi-tenant product.
+
+**Slide 15, 7:45 to 8:10**
+
+The intended operator workflow starts in MiniStore, where an order and its event are created together. Event Explorer then shows the event state, request, response, latency, and attempt history. Receiver Inbox shows accepted notifications after signature verification and deduplication.
+
+**Slide 16, 8:10 to 8:30**
+
+The discussion is therefore balanced: the architecture and local service checks are in place, while the end-to-end browser scenario still needs a live rerun. The remaining evidence should include the order, induced receiver failure, retry timeline, final receipt, and replay behavior.
+
+### Conclusion and future scope, 8:30 to 10:00
+
+**Slide 17, 8:30 to 9:15**
+
+HookGuard demonstrates durable webhook intake, asynchronous delivery, signed requests, retry, history, and replay. The outbox addresses the database-to-queue dual-write problem. At-least-once delivery means a receiver must deduplicate. The local build and service checks passed, but browser validation and production hardening remain. These limitations define the next steps rather than weakening the core reliability model.
+
+**Slide 18, 9:15 to 9:45**
+
+For future work, I would add dashboard authentication and role-based access, production-grade secret and API-key management, and metrics with alerts. I would also run load and failure-injection tests, then evaluate horizontal worker scaling and high availability for PostgreSQL and Redis. These are proposed extensions, not current features.
+
+Suggested slide 18 bullets to add before presenting:
+
+- Add dashboard authentication, roles, and managed API-key rotation.
+- Add metrics, tracing, alerts, load tests, and failure-injection results.
+- Evaluate worker scaling and highly available PostgreSQL and Redis deployments.
+
+**Slide 19, 9:45 to 9:50**
+
+The references on this slide informed the reliability, HTTP, and security design choices.
+
+**Closing, 9:50 to 10:00**
+
+Thank you. I am ready to answer questions about the design, its evidence, and its current limitations.
+
+## 11. Viva question and answer bank
+
+The viva is two minutes, so answers should be direct. Start with the concept, connect it to HookGuard, and state a limitation when it matters. The examiner may ask only a few questions; this bank is for preparation. Avoid claiming exactly-once effects, measured throughput, completed browser validation, or production readiness.
+
+### Problem and architecture
+
+**1. What problem does HookGuard solve?**
+
+It makes webhook delivery recoverable when a receiver is unavailable or a request outcome is uncertain. It durably accepts an event, delivers asynchronously, records attempts, and supports retry and replay.
+
+**2. Why use webhooks instead of polling?**
+
+Webhooks let the producer notify the receiver when an event occurs, without the receiver repeatedly polling for changes. The trade-off is that the sender must handle receiver outages, retries, duplicate requests, and authentication.
+
+**3. Why are the API and worker separate processes?**
+
+The API can acknowledge durable acceptance without waiting on a remote receiver. The worker handles slower network calls and retry timing independently, so receiver latency does not occupy the producer request for the full delivery lifecycle.
+
+**4. What is the role of each main technology?**
+
+React and Vite provide the console. Express handles HTTP routes. PostgreSQL stores durable state. Redis and BullMQ coordinate immediate and delayed work. The Node worker sends signed requests, and the receiver verifies them.
+
+**5. Why use PostgreSQL and Redis together?**
+
+PostgreSQL provides durable relational state, transactions, constraints, and queryable history. Redis with BullMQ coordinates runnable and delayed jobs. Redis is not the authoritative record of event history.
+
+**6. What does HTTP 202 mean in this project?**
+
+It means HookGuard has accepted the event for processing after committing it and its outbox intent. It does not mean the destination has received or processed the webhook.
+
+### Persistence, queues, and delivery semantics
+
+**7. What problem does the transactional outbox solve?**
+
+PostgreSQL and Redis cannot be committed atomically in one ordinary transaction. HookGuard stores the event and a durable queue intent together in PostgreSQL, then a publisher transfers that intent to BullMQ.
+
+**8. What happens if the publisher crashes after creating a BullMQ job?**
+
+The outbox row may still appear unpublished and be processed again. The job ID is derived from the outbox row, so repeated publication uses the same stable ID while BullMQ retains that job.
+
+**9. Why is delivery at least once instead of exactly once?**
+
+A worker can send a request successfully and then crash before recording the result. Recovery must retry because it cannot know whether the receiver processed the first request. That can produce duplicates, so receivers must deduplicate business effects.
+
+**10. How do producer idempotency and receiver deduplication differ?**
+
+Producer idempotency prevents repeated API submissions from creating multiple stored events for the same endpoint and key. Receiver deduplication prevents repeated delivery of one event from applying the same business effect more than once.
+
+**11. What are the main event states?**
+
+An event moves from queued to delivering, then to succeeded, scheduled for retry, or failed after the attempt limit. A replay starts a new run for a succeeded or failed event while retaining its earlier attempts.
+
+**12. How does retry backoff work?**
+
+The delay grows exponentially from a configured base, is capped, and gets a random jitter adjustment. The endpoint also sets a maximum number of attempts. Jitter helps avoid many events retrying at the same instant.
+
+**13. What does the failed state represent? Is there a separate dead-letter queue?**
+
+Failed is HookGuard's retained dead-letter state in PostgreSQL. The event and attempts remain available for inspection and replay. The project does not use a separate BullMQ dead-letter queue.
+
+**14. What is `FOR UPDATE SKIP LOCKED` used for?**
+
+The outbox publisher locks rows it is processing and skips rows locked by another publisher. Multiple publishers can divide pending work without waiting on the same rows or publishing the same row simultaneously.
+
+**15. How does the worker avoid two jobs delivering the same current run?**
+
+It conditionally updates the event from queued or scheduled to delivering in PostgreSQL. Only a job that successfully claims that state proceeds. The replay-run check also prevents an older job from taking over a newer replay.
+
+**16. What happens after a worker crashes during delivery?**
+
+An event left in delivering for more than 60 seconds is treated as stale and requeued with a fresh outbox generation. This favors recovery, but the receiver may see a duplicate if it processed the earlier request.
+
+**17. How are duplicate receiver effects prevented in the bundled demo?**
+
+The receiver verifies the signature and stores one receipt per endpoint and event ID. An external receiver should implement equivalent idempotency using the event ID or idempotency key.
+
+### Security
+
+**18. How is an outbound webhook signed?**
+
+HookGuard computes HMAC-SHA256 with the endpoint secret over the Unix timestamp, a period, and the exact raw request body. It sends the timestamp and signature in headers. The receiver recalculates and compares the digest.
+
+**19. Why sign the raw request body?**
+
+Parsing and serializing JSON again can change whitespace or representation, which changes the bytes. Signing the transmitted bytes lets the receiver verify the exact body that arrived.
+
+**20. What does the timestamp add to the signature?**
+
+The receiver rejects signatures outside a five-minute freshness window, reducing the usefulness of captured requests. Event-level deduplication is still needed because freshness checks alone do not prevent a duplicate inside that window.
+
+**21. How are endpoint secrets protected at rest?**
+
+The application encrypts them using AES-256-GCM before storing them. The encryption key comes from `HOOKGUARD_SECRET_KEY` and must remain stable to decrypt existing values. This local demo does not include a managed production key service.
+
+**22. What SSRF defenses are implemented?**
+
+External destinations must use HTTPS, cannot contain credentials or fragments, must resolve only to public addresses, and are checked again when connecting. Redirects are disabled. A narrow exception allows the configured local demo receiver.
+
+**23. Is the dashboard safe to expose to the internet?**
+
+No. The producer API is authenticated, but the dashboard is a local single-workspace demo without user login or role-based access. It needs an access-control layer and production configuration before being exposed to other users.
+
+### Testing, limitations, and future work
+
+**24. How was the project verified?**
+
+The current checks include the automated Node test suite, a production frontend build, database migrations, source syntax checks, and local service health. The full browser-driven order-to-retry-to-replay scenario still needs to be rerun.
+
+**25. What does the Failure Lab demonstrate?**
+
+It can make the local receiver return success, transient or persistent errors, HTTP 429, and timeouts. This provides a controlled way to examine retry and recovery behavior without relying on an external service.
+
+**26. Were throughput or delivery-rate benchmarks performed?**
+
+No. The project has not measured throughput or delivery rate, so it makes no performance claim. Load testing and collecting repeatable measurements are future work.
+
+**27. What is the largest current limitation?**
+
+The product is a local single-workspace demonstration without dashboard authentication, multi-tenant permissions, production secret management, or a completed browser-driven recovery validation. These are clear next steps before real deployment.
+
+**28. How could HookGuard be scaled?**
+
+First measure the current system under load. Then evaluate multiple workers, queue concurrency, database connection limits, and high availability for PostgreSQL and Redis. Scaling must preserve event claims, outbox safety, and receiver idempotency.
+
+**29. What future features would you prioritize?**
+
+I would add dashboard authentication and roles, managed secret rotation, operational metrics and alerts, repeatable load and failure tests, and deployment guidance with highly available infrastructure. These are proposed features, not implemented claims.
+
+**30. What is the most important design trade-off?**
+
+HookGuard chooses recoverable at-least-once delivery over silent loss. A retry can duplicate a request, so the receiver must be idempotent. This is safer for event delivery than pretending the system can guarantee exactly-once effects across independent services.
+
+## 12. Key terms
 
 | Term | Meaning in this project |
 | --- | --- |
