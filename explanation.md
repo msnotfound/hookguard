@@ -38,7 +38,7 @@ PostgreSQL is the durable record of endpoints, events, attempts, outbox work, de
 
 The API, worker, and Vite development server are separate processes. Docker Compose provides PostgreSQL and Redis for local development. In a production-style local run, the API also serves the compiled frontend.
 
-For the portfolio deployment, Vercel serves the landing page, dashboard assets, and the Express app through a serverless function. A separate persistent worker runs the outbox publisher and BullMQ consumer. Both services share PostgreSQL and Redis; the seeded receiver URL points back to the public Vercel API route.
+For the all-Render portfolio deployment, one free Render web service serves the landing page, dashboard assets, and Express API while running the worker as a second Node process. Both processes share a free Render Postgres database and private free Key Value service. The seeded receiver URL points back to the same public Render web service. The `api/` Vercel adapter remains in the repository for the earlier deployment path, but the Render Blueprint does not use it.
 
 | Component | Responsibility |
 | --- | --- |
@@ -50,8 +50,7 @@ For the portfolio deployment, Vercel serves the landing page, dashboard assets, 
 | Delivery worker | Claims an event, signs and sends an HTTP request, records the outcome, and schedules a retry if required. |
 | Notification Receiver | Verifies HookGuard signatures and stores one accepted receipt per event. |
 | MiniStore | Creates a persistent example order and its order-created event. |
-| Vercel API function | Runs the Express routes for public deployments without starting a long-lived worker. |
-| Persistent worker service | Publishes outbox rows and processes BullMQ jobs continuously. |
+| Render web service | Hosts the built frontend and API, and starts the separate worker process with `npm start`. |
 
 ## 3. The complete event flow
 
@@ -170,7 +169,7 @@ The worker has a narrow exception for HookGuard's own local demo receiver. That 
 
 The portfolio deployment intentionally has no dashboard login. All visitors share one database and can operate the demo. Production mode applies a Redis-backed limit of 20 mutating requests per minute per IP, allows endpoint creation only for the built-in simulator, and keeps the producer API key out of browser responses. These limits make the public demo suitable for synthetic product exploration, not a real multi-user service. Do not add confidential payloads, production endpoints, or customer secrets. The producer `POST /v1/events` route still requires its separate server-side `HOOKGUARD_API_KEY`.
 
-The API allows its own request origin and the local Vite origins; additional cross-origin frontends can be listed with `HOOKGUARD_ALLOWED_ORIGINS`. On Vercel, the production host is accepted as a same-origin request. The Vercel function handles HTTP requests but does not run migrations or the delivery worker. The persistent worker runs migrations at startup, publishes the outbox, and consumes jobs. A managed PostgreSQL service and Redis-compatible service must be configured for both deployments.
+The API allows its own request origin and the local Vite origins; additional cross-origin frontends can be listed with `HOOKGUARD_ALLOWED_ORIGINS`. In the Render deployment, the public host is accepted as a same-origin request. The Render web service runs `npm start`, which starts the local API server and delivery worker as separate Node processes. Both run the idempotent schema setup at startup, and the worker publishes the outbox and consumes jobs. The Blueprint supplies Postgres, a private Key Value connection, and the public API URL reference.
 
 ## 7. API and product surfaces
 
@@ -200,39 +199,32 @@ Open **http://127.0.0.1:5173**. Development starts the API, worker, and frontend
 
 ### Public portfolio deployment
 
-The deployed structure separates request handling from delivery:
+The deployed structure separates API and delivery processes inside one web service:
 
     Browser
       | landing page, dashboard, /api/*
       v
-    Vercel static output + Express function
-      | SQL queries and queue writes
-      +-------------------------> Managed PostgreSQL
-      +-------------------------> Redis-compatible service
-                                      ^
-                                      | BullMQ jobs
-    Persistent worker ------------+
-      | outbox polling, signature, retries
-      v
-    Vercel /api/receiver/delivery/:endpointId
+    Render free web service
+      |-- API process: Express routes, static assets, receiver
+      |-- Worker process: outbox polling, signatures, retries
+      |       | BullMQ jobs
+      |       v
+      |   Private free Render Key Value
+      |       ^
+      |       | SQL state and outbox
+      +---- Render Postgres (free)
+      |
+      +---- receiver delivery returns to this same public service
 
-The Express app is exported from `backend/api/app.js`. `api/[...path].js` adapts that app to Vercel's function interface. The local `backend/api/server.js` adds static-file serving, migrations, and graceful shutdown; the Vercel function does not run those local-server tasks. The delivery worker starts the migration, outbox publisher, and BullMQ consumer. Its `HOOKGUARD_PUBLIC_API_URL` must point to the deployed Vercel base URL so simulator deliveries return to the public API.
+The Express app is in `backend/api/app.js`. `backend/api/server.js` adds static-file serving, schema setup, and graceful shutdown. `backend/worker/worker.js` starts the outbox publisher and BullMQ consumer. Render's `npm start` script launches the API and worker as two processes in the same web-service instance. `HOOKGUARD_PUBLIC_API_URL` references the service's `RENDER_EXTERNAL_URL`, so the demo receiver points back to the deployed service rather than localhost.
 
-To deploy, import the GitHub `main` branch as a Vercel Vite project, set the production variables below, and deploy the persistent worker from `render.yaml`. Configure both services to use the same database, Redis, encryption key, demo receiver secret, and public API URL. The worker blueprint uses Render's paid Starter plan. After it starts, check `/api/health`; a healthy response requires PostgreSQL, Redis, and a recent worker heartbeat. The database schema is created by the worker at startup.
+To deploy, connect the GitHub `main` branch to Render and create a Blueprint using `render.yaml`. It declares one free Node web service, one free Key Value instance, and one free Postgres database in Singapore. Render wires `DATABASE_URL`, `REDIS_URL`, and the public API URL, and generates `HOOKGUARD_SECRET_KEY`, `HOOKGUARD_API_KEY`, and `DEMO_WEBHOOK_SECRET`. The build sets `VITE_PUBLIC_DEMO=true`; the service sets `HOOKGUARD_PUBLIC_DEMO=true` and `PG_POOL_MAX=1`. The API server and worker each run schema setup at startup. Check `/api/health`; it reports healthy after Postgres, Key Value, and a recent worker heartbeat are available.
 
-| Environment variable | Purpose |
-| --- | --- |
-| `DATABASE_URL` | Managed Postgres URL; use a pooler suitable for serverless connections when available. |
-| `REDIS_URL` | Redis-compatible URL with TLS and the connection behavior BullMQ requires. |
-| `HOOKGUARD_SECRET_KEY` | Stable random key for AES-GCM endpoint-secret encryption. |
-| `HOOKGUARD_API_KEY` | Separate producer API key; never expose this in browser code. |
-| `DEMO_WEBHOOK_SECRET` | Stable HMAC secret for the built-in receiver. |
-| `HOOKGUARD_PUBLIC_API_URL` | Deployed Vercel origin used to seed the receiver destination. |
-| `HOOKGUARD_PUBLIC_DEMO` | Set to `true` in Vercel to enforce simulator-only destinations and write limits. |
-| `VITE_PUBLIC_DEMO` | Set to `true` in the Vercel build so the browser displays the shared-demo restrictions. |
-| `PG_POOL_MAX` | Keep at `1` for the serverless API and low-connection database plans. |
+The public demo has no login. Every visitor shares the dashboard and database, destinations are restricted to the built-in simulator, and mutating requests are rate limited. Use synthetic data only and do not connect production systems.
 
-Production is a shared, unauthenticated portfolio demo. The dashboard is visible to every visitor, database changes are shared, simulator destinations are enforced, and write requests are rate limited. Use synthetic data only. Do not treat this deployment as a private workspace or connect production systems.
+The free hosting trade-offs affect the demonstrated reliability guarantees. Render allows one active free Postgres database and one active free Key Value instance per workspace. A free web service sleeps after 15 minutes without incoming traffic, and waking it can take about a minute. Free Postgres provides 1 GB, no backups, and expires 30 days after creation. Free Key Value is in-memory only; a restart clears BullMQ jobs and rate-limit data. If a queue restart loses a job after its outbox row has been marked published, an event may remain in `queued` or `scheduled` state. The app only exposes replay for completed or failed events, so this case can need operator repair. Free services have monthly quotas, and excess outbound bandwidth can incur charges. Review Render's [current free-plan terms](https://render.com/docs/free) and workspace usage.
+
+If the older deployment was already created, remove or disable the paid `hookguard-delivery-worker` service. The current Blueprint runs the worker inside the free web service and does not need that separate process on Render.
 
 Before sharing a local service, set unique values for **HOOKGUARD_API_KEY**, **HOOKGUARD_SECRET_KEY**, and **DEMO_WEBHOOK_SECRET** in the environment. Keep the encryption key backed up and stable. Do not treat the default local credentials as deployment secrets.
 
@@ -310,7 +302,7 @@ Outbound requests use timestamped HMAC-SHA256 over the timestamp and raw JSON by
 
 **Slide 14, 7:10 to 7:45**
 
-The automated tests and production frontend build pass. Local migration and service-health results are documented from the project run; the full browser flow remains to be rerun. I have not measured throughput or delivery rates, so I do not make performance claims. Vercel and persistent-worker deployment configuration is included, but a live deployment still depends on provider accounts, managed-service URLs, and production secrets.
+The automated tests and production frontend build pass. The all-Render Blueprint is included, but a live deployment still depends on creating the resources in a Render account. The free web service may sleep, the free database expires after 30 days, and the in-memory queue can lose jobs on a Key Value restart. I have not measured throughput or delivery rates, so I do not make performance claims.
 
 **Slide 15, 7:45 to 8:10**
 

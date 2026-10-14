@@ -146,35 +146,22 @@ Copy `.env.example` to `.env`. Set a new `HOOKGUARD_API_KEY`, `HOOKGUARD_SECRET_
 
 ## Public portfolio deployment
 
-The included deployment uses Vercel for the landing page, static dashboard, and Express API function. A separate, always-on worker is required for BullMQ delivery. PostgreSQL and a Redis-compatible service must be reachable from both Vercel and the worker. The worker blueprint in `render.yaml` uses Render's paid Starter plan and prompts for connection strings and secrets.
+The repository includes a Render Blueprint in `render.yaml`. It creates one free web service for the landing page, dashboard, Express API, and delivery worker, plus a free Render Postgres database and a private free Render Key Value instance for BullMQ. The API and worker remain separate Node processes, started together by `npm start`; the API serves the compiled frontend. All three resources are placed in Singapore, and Render generates the application secrets and wires the database and queue URLs automatically.
 
 This is a shared, unauthenticated portfolio demo. Every visitor uses the same database and can change demo state. Production mode limits endpoint destinations to the built-in receiver and caps dashboard writes at 20 requests per minute per IP. Use synthetic data only. Do not connect real customer systems or place real credentials in the demo.
 
-1. Create a managed PostgreSQL database and a Redis-compatible service that supports BullMQ blocking connections. Keep their TLS-enabled connection URLs for the next steps.
-2. Import `msnotfound/hookguard` into Vercel from the `main` branch. The repository's `vercel.json` sets the Vite build and output directory. Add these production environment variables in Vercel:
+1. Sign in to Render, connect the GitHub repository `msnotfound/hookguard`, and create a Blueprint from its `main` branch. Render reads `render.yaml`; confirm the three resources show the Free plans before applying it. No Vercel project or separately provisioned database or queue is needed.
+2. Wait for the web service to build and deploy. Render creates the database, private Key Value connection, public API URL reference, and three generated secrets. The build enables the public-demo UI, and the server enables the matching simulator-only destination and request limits. No secret values need to be added to Git or typed into the Blueprint.
+3. Open the Render web service URL for the landing page, add `/app` for the dashboard, and `/api/health` for the health check. Health becomes `healthy` after Postgres, Key Value, and the worker heartbeat are available. A sleeping free web service can take about a minute to wake after an idle period.
 
-   | Variable | Value |
-   | --- | --- |
-   | `DATABASE_URL` | PostgreSQL connection URL. Use the provider's pooled URL for serverless access when available. |
-   | `REDIS_URL` | Redis-compatible TLS connection URL. |
-   | `HOOKGUARD_SECRET_KEY` | A stable random secret used to encrypt endpoint secrets. |
-   | `HOOKGUARD_API_KEY` | A separate random key for the producer `POST /v1/events` route. Keep it server-side. |
-   | `DEMO_WEBHOOK_SECRET` | A stable random secret for the built-in receiver. |
-   | `HOOKGUARD_PUBLIC_API_URL` | The deployed base URL, for example `https://your-project.vercel.app`. |
-   | `HOOKGUARD_PUBLIC_DEMO` | `true`, enabling the server-side shared-demo destination and write limits. |
-   | `VITE_PUBLIC_DEMO` | `true`, so the dashboard shows its shared-demo limits in the browser. |
-   | `PG_POOL_MAX` | `1` |
+Render allows one active free Postgres database and one active free Key Value instance per workspace, so check that these quotas are available before applying the Blueprint. Free web services sleep after 15 minutes without incoming traffic. Free Postgres has 1 GB of storage, no backups, and expires 30 days after creation. Free Key Value is in-memory only, so a restart clears BullMQ data. If a queue restart loses a job after the outbox row was marked published, the corresponding event can remain `queued` or `scheduled`; this demo does not automatically rebuild those jobs. The dashboard's Replay action is limited to completed and failed events, so an operator may need to repair such a record. These limits make the Blueprint suitable for a short synthetic-data demo, not production use. Render's free services have monthly quotas; excess outbound bandwidth can incur charges. Check the [current free-plan limits](https://render.com/docs/free) and your Render usage dashboard.
 
-   Generate a random hex secret with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. Use separate values for the encryption key, producer API key, and demo receiver secret. Do not commit them.
-3. Deploy the worker blueprint from `render.yaml`. Supply the same `DATABASE_URL`, `REDIS_URL`, `HOOKGUARD_SECRET_KEY`, `DEMO_WEBHOOK_SECRET`, and `HOOKGUARD_PUBLIC_API_URL` values. Set `PG_POOL_MAX=1` if the provider has a low connection limit. The worker runs the schema migration on startup, then starts the outbox publisher and delivery consumer.
-4. Redeploy Vercel after adding its environment variables. Open `https://your-project.vercel.app` for the landing page, `/app` for the dashboard, and `/api/health` to check Postgres, Redis, and the worker heartbeat. The health endpoint reports `degraded` until the worker is online.
-
-The Vercel function serves API requests only; it does not run migrations or the long-lived delivery worker. Do not remove the separate worker or point the seeded receiver at a localhost URL. Vercel's deployment boundaries are described in its [Express](https://vercel.com/docs/frameworks/backend/express) and [Vite](https://vercel.com/docs/frameworks/frontend/vite) guides; the persistent worker uses Render's [Background Worker](https://render.com/docs/background-workers) service type.
+If you previously deployed the old `hookguard-delivery-worker` service from this repository, remove or disable that service after the new web service is working. The current Blueprint runs the worker inside the free web service and does not need a separate paid worker. The `api/` Vercel adapter and `vercel.json` remain in the repository for the earlier deployment option, but the all-Render Blueprint does not use them.
 
 ## Project structure
 
 ```text
-api/               Vercel function entry point
+api/               Vercel adapter, unused by the Render Blueprint
 backend/api/       Express API app, local server, verified demo receiver
 backend/worker/    BullMQ delivery worker
 backend/shared/    Postgres repository, migrations, outbox, signing, safety
