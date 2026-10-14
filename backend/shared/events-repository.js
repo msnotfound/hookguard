@@ -135,7 +135,10 @@ export async function createDemoOrder({ customerName, itemName, amountCents, end
       [orderId, customerName, itemName, amountCents, event.id]
     );
     await client.query("COMMIT");
-    return { order: { id: orderId, customerName, itemName, amountCents }, event: await getEvent(event.id) };
+    return {
+      order: { id: orderId, customerName, itemName, amountCents },
+      event: mapEvent({ ...event, endpoint_name: endpoint.name }, [])
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
