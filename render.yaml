@@ -1,24 +1,57 @@
 services:
-  - type: worker
-    name: hookguard-delivery-worker
+  - type: web
+    name: hookguard
     runtime: node
-    plan: starter
-    buildCommand: npm ci
-    startCommand: npm run start:worker
+    plan: free
+    region: singapore
+    buildCommand: npm ci && VITE_PUBLIC_DEMO=true npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: NODE_VERSION
-        value: 22.22.0
-      - key: DATABASE_URL
-        sync: false
-      - key: REDIS_URL
-        sync: false
-      - key: HOOKGUARD_SECRET_KEY
-        sync: false
-      - key: HOOKGUARD_PUBLIC_API_URL
-        sync: false
-      - key: DEMO_WEBHOOK_SECRET
-        sync: false
+        value: "22.22.0"
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 10000
+      - key: PG_POOL_MAX
+        value: 1
+      - key: HOOKGUARD_PUBLIC_DEMO
+        value: "true"
       - key: DELIVERY_TIMEOUT_MS
         value: 3000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: hookguard-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: hookguard-redis
+          property: connectionString
+      - key: HOOKGUARD_PUBLIC_API_URL
+        fromService:
+          type: web
+          name: hookguard
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: HOOKGUARD_SECRET_KEY
+        generateValue: true
+      - key: HOOKGUARD_API_KEY
+        generateValue: true
+      - key: DEMO_WEBHOOK_SECRET
+        generateValue: true
+
+  - type: keyvalue
+    name: hookguard-redis
+    plan: free
+    region: singapore
+    maxmemoryPolicy: noeviction
+    persistenceMode: "off"
+    ipAllowList: []
+
+databases:
+  - name: hookguard-postgres
+    plan: free
+    region: singapore
