@@ -38,16 +38,20 @@ PostgreSQL is the durable record of endpoints, events, attempts, outbox work, de
 
 The API, worker, and Vite development server are separate processes. Docker Compose provides PostgreSQL and Redis for local development. In a production-style local run, the API also serves the compiled frontend.
 
+For the portfolio deployment, Vercel serves the landing page, dashboard assets, and the Express app through a serverless function. A separate persistent worker runs the outbox publisher and BullMQ consumer. Both services share PostgreSQL and Redis; the seeded receiver URL points back to the public Vercel API route.
+
 | Component | Responsibility |
 | --- | --- |
 | React + Vite frontend | Operator console for monitoring, endpoint configuration, event inspection, demo orders, failure injection, and API instructions. |
 | Express API | Validates requests, authenticates producer submissions, reads dashboard data, and writes events and related records. |
 | PostgreSQL | Durable event state, idempotency constraints, retry history, and the transactional outbox. |
-| Outbox publisher | Finds committed delivery work and publishes it to BullMQ. It runs alongside the API and worker. |
+| Outbox publisher | Runs in the worker process, finds committed delivery work, and publishes it to BullMQ. |
 | Redis + BullMQ | Holds runnable and delayed jobs and coordinates workers. |
 | Delivery worker | Claims an event, signs and sends an HTTP request, records the outcome, and schedules a retry if required. |
 | Notification Receiver | Verifies HookGuard signatures and stores one accepted receipt per event. |
 | MiniStore | Creates a persistent example order and its order-created event. |
+| Vercel API function | Runs the Express routes for public deployments without starting a long-lived worker. |
+| Persistent worker service | Publishes outbox rows and processes BullMQ jobs continuously. |
 
 ## 3. The complete event flow
 
@@ -164,7 +168,9 @@ The worker has a narrow exception for HookGuard's own local demo receiver. That 
 
 ### Deployment boundary
 
-The producer API is authenticated, but the dashboard is a single-workspace local demo without user login, team permissions, or billing. CORS is limited to the local Vite origins. Keep the dashboard local or place it behind an appropriate access-control layer before making the service reachable by other users. The project is self-hosted; it does not include cloud deployment or production account management.
+The portfolio deployment intentionally has no dashboard login. All visitors share one database and can operate the demo. Production mode applies a Redis-backed limit of 20 mutating requests per minute per IP, allows endpoint creation only for the built-in simulator, and keeps the producer API key out of browser responses. These limits make the public demo suitable for synthetic product exploration, not a real multi-user service. Do not add confidential payloads, production endpoints, or customer secrets. The producer `POST /v1/events` route still requires its separate server-side `HOOKGUARD_API_KEY`.
+
+The API allows its own request origin and the local Vite origins; additional cross-origin frontends can be listed with `HOOKGUARD_ALLOWED_ORIGINS`. On Vercel, the production host is accepted as a same-origin request. The Vercel function handles HTTP requests but does not run migrations or the delivery worker. The persistent worker runs migrations at startup, publishes the outbox, and consumes jobs. A managed PostgreSQL service and Redis-compatible service must be configured for both deployments.
 
 ## 7. API and product surfaces
 
@@ -192,7 +198,43 @@ Requirements are Node.js 22.19 or newer, Docker Compose, and available local por
 
 Open **http://127.0.0.1:5173**. Development starts the API, worker, and frontend as separate processes. Stop these processes with Ctrl+C, then stop PostgreSQL and Redis with `docker compose down`; this preserves the database volume. For a production-style local build, run **npm run build** and then **npm start**; the API serves the compiled frontend at **http://127.0.0.1:3000**.
 
-Before sharing the service, set unique values for **HOOKGUARD_API_KEY**, **HOOKGUARD_SECRET_KEY**, and **DEMO_WEBHOOK_SECRET** in the environment. Keep the encryption key backed up and stable. Do not treat the default local credentials as deployment secrets.
+### Public portfolio deployment
+
+The deployed structure separates request handling from delivery:
+
+    Browser
+      | landing page, dashboard, /api/*
+      v
+    Vercel static output + Express function
+      | SQL queries and queue writes
+      +-------------------------> Managed PostgreSQL
+      +-------------------------> Redis-compatible service
+                                      ^
+                                      | BullMQ jobs
+    Persistent worker ------------+
+      | outbox polling, signature, retries
+      v
+    Vercel /api/receiver/delivery/:endpointId
+
+The Express app is exported from `backend/api/app.js`. `api/[...path].js` adapts that app to Vercel's function interface. The local `backend/api/server.js` adds static-file serving, migrations, and graceful shutdown; the Vercel function does not run those local-server tasks. The delivery worker starts the migration, outbox publisher, and BullMQ consumer. Its `HOOKGUARD_PUBLIC_API_URL` must point to the deployed Vercel base URL so simulator deliveries return to the public API.
+
+To deploy, import the GitHub `main` branch as a Vercel Vite project, set the production variables below, and deploy the persistent worker from `render.yaml`. Configure both services to use the same database, Redis, encryption key, demo receiver secret, and public API URL. The worker blueprint uses Render's paid Starter plan. After it starts, check `/api/health`; a healthy response requires PostgreSQL, Redis, and a recent worker heartbeat. The database schema is created by the worker at startup.
+
+| Environment variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Managed Postgres URL; use a pooler suitable for serverless connections when available. |
+| `REDIS_URL` | Redis-compatible URL with TLS and the connection behavior BullMQ requires. |
+| `HOOKGUARD_SECRET_KEY` | Stable random key for AES-GCM endpoint-secret encryption. |
+| `HOOKGUARD_API_KEY` | Separate producer API key; never expose this in browser code. |
+| `DEMO_WEBHOOK_SECRET` | Stable HMAC secret for the built-in receiver. |
+| `HOOKGUARD_PUBLIC_API_URL` | Deployed Vercel origin used to seed the receiver destination. |
+| `HOOKGUARD_PUBLIC_DEMO` | Set to `true` in Vercel to enforce simulator-only destinations and write limits. |
+| `VITE_PUBLIC_DEMO` | Set to `true` in the Vercel build so the browser displays the shared-demo restrictions. |
+| `PG_POOL_MAX` | Keep at `1` for the serverless API and low-connection database plans. |
+
+Production is a shared, unauthenticated portfolio demo. The dashboard is visible to every visitor, database changes are shared, simulator destinations are enforced, and write requests are rate limited. Use synthetic data only. Do not treat this deployment as a private workspace or connect production systems.
+
+Before sharing a local service, set unique values for **HOOKGUARD_API_KEY**, **HOOKGUARD_SECRET_KEY**, and **DEMO_WEBHOOK_SECRET** in the environment. Keep the encryption key backed up and stable. Do not treat the default local credentials as deployment secrets.
 
 ## 9. What the system guarantees—and what it does not
 
@@ -242,7 +284,7 @@ Here is the delivery lifecycle. A producer submits JSON with an endpoint and ide
 
 **Slide 8, 4:30 to 5:00**
 
-The separation of responsibilities is deliberate. PostgreSQL stores endpoints, events, attempts, and outbox intent. Redis holds work that is ready or delayed. The worker performs network delivery. The dashboard has no user login, so this project is a local demonstration and needs additional access control before use by other users.
+The separation of responsibilities is deliberate. PostgreSQL stores endpoints, events, attempts, and outbox intent. Redis holds work that is ready or delayed. The worker performs network delivery. The portfolio deployment has no user login and is a shared demo, with the production API limited to the built-in receiver. It is not a private workspace or multi-tenant service.
 
 **Slide 9, 5:00 to 5:30**
 
@@ -264,11 +306,11 @@ Temporary failures use bounded exponential backoff with jitter. If all configure
 
 **Slide 13, 6:45 to 7:10**
 
-Outbound requests use timestamped HMAC-SHA256 over the timestamp and raw JSON bytes. Endpoint secrets are encrypted at rest. External destinations require HTTPS, are checked against private or reserved addresses, and are not followed through redirects. The local dashboard still lacks user authentication, which is an important deployment limitation.
+Outbound requests use timestamped HMAC-SHA256 over the timestamp and raw JSON bytes. Endpoint secrets are encrypted at rest. In local development, external destinations require HTTPS, are checked against private or reserved addresses, and are not followed through redirects. The shared public demo has no dashboard login and uses only its built-in receiver.
 
 **Slide 14, 7:10 to 7:45**
 
-The build completed, the database migration applied, and the local health endpoint reported the API, PostgreSQL, Redis, and worker as healthy. The full browser flow remains to be rerun. I have not measured throughput or delivery rates, so I do not make performance claims. The deployment is a local demo, not a hosted multi-tenant product.
+The automated tests and production frontend build pass. Local migration and service-health results are documented from the project run; the full browser flow remains to be rerun. I have not measured throughput or delivery rates, so I do not make performance claims. Vercel and persistent-worker deployment configuration is included, but a live deployment still depends on provider accounts, managed-service URLs, and production secrets.
 
 **Slide 15, 7:45 to 8:10**
 
@@ -282,7 +324,7 @@ The discussion is therefore balanced: the architecture and local service checks 
 
 **Slide 17, 8:30 to 9:15**
 
-HookGuard demonstrates durable webhook intake, asynchronous delivery, signed requests, retry, history, and replay. The outbox addresses the database-to-queue dual-write problem. At-least-once delivery means a receiver must deduplicate. The local build and service checks passed, but browser validation and production hardening remain. These limitations define the next steps rather than weakening the core reliability model.
+HookGuard demonstrates durable webhook intake, asynchronous delivery, signed requests, retry, history, and replay. The outbox addresses the database-to-queue dual-write problem. At-least-once delivery means a receiver must deduplicate. The current public deployment design is a shared portfolio demo, with browser validation and live provider setup still outstanding. These limitations define the next steps rather than weakening the core reliability model.
 
 **Slide 18, 9:15 to 9:45**
 
@@ -402,7 +444,7 @@ External destinations must use HTTPS, cannot contain credentials or fragments, m
 
 **23. Is the dashboard safe to expose to the internet?**
 
-No. The producer API is authenticated, but the dashboard is a local single-workspace demo without user login or role-based access. It needs an access-control layer and production configuration before being exposed to other users.
+No. The producer API requires a server-side API key. The dashboard has no login and shares one demo database among all visitors. Production limits endpoint destinations to the built-in simulator and rate limits writes, but this still is not suitable for private data or real customer systems.
 
 ### Testing, limitations, and future work
 
@@ -420,7 +462,7 @@ No. The project has not measured throughput or delivery rate, so it makes no per
 
 **27. What is the largest current limitation?**
 
-The product is a local single-workspace demonstration without dashboard authentication, multi-tenant permissions, production secret management, or a completed browser-driven recovery validation. These are clear next steps before real deployment.
+The product is a shared single-workspace portfolio demonstration without dashboard authentication or multi-tenant permissions. Live provider configuration and browser-driven recovery validation are still outstanding. These are clear next steps before using HookGuard for real workloads.
 
 **28. How could HookGuard be scaled?**
 

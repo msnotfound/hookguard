@@ -1,8 +1,11 @@
 import "dotenv/config";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 
+const secretKey = process.env.HOOKGUARD_SECRET_KEY || (process.env.NODE_ENV === "production" ? "" : "hookguard-local-encryption-key-change-before-deploy");
+if (!secretKey) throw new Error("HOOKGUARD_SECRET_KEY must be set in production.");
+
 const key = createHash("sha256")
-  .update(process.env.HOOKGUARD_SECRET_KEY || "hookguard-local-encryption-key-change-before-deploy")
+  .update(secretKey)
   .digest();
 
 export function encryptSecret(value) {

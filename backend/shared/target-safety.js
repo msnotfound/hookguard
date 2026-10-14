@@ -13,10 +13,11 @@ export function isLocalReceiverUrl(value) {
   const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
   const configuredHost = config.host.toLowerCase();
   const allowedHosts = new Set([...localHosts, configuredHost]);
+  const receiverPath = url.pathname.startsWith("/receiver/") || url.pathname.startsWith("/api/receiver/delivery/");
   return url.protocol === "http:" &&
     allowedHosts.has(url.hostname.toLowerCase()) &&
     port === config.port &&
-    url.pathname.startsWith("/receiver/");
+    receiverPath;
 }
 
 export async function validateTargetUrl(value, { allowLocalReceiver = false } = {}) {

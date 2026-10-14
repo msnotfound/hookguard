@@ -167,7 +167,7 @@ export async function migrate() {
     [
       "demo-receiver",
       "MiniStore notification receiver",
-      `http://${config.host}:${config.port}/receiver/demo-receiver`,
+      config.receiverUrl("demo-receiver"),
       encryptSecret(process.env.DEMO_WEBHOOK_SECRET || "whsec_hookguard_demo_only")
     ]
   );

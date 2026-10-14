@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import LandingPage from "./landing.jsx";
 import "@fontsource/dm-sans/400.css";
 import "@fontsource/dm-sans/500.css";
 import "@fontsource/dm-sans/600.css";
@@ -7,6 +8,8 @@ import "@fontsource/dm-sans/700.css";
 import "@fontsource/dm-mono/400.css";
 import "@fontsource/dm-mono/500.css";
 import "./styles.css";
+
+const PUBLIC_DEMO = import.meta.env.VITE_PUBLIC_DEMO === "true";
 
 const NAV = [
   { id: "overview", label: "Overview", icon: "grid", section: "Workspace" },
@@ -24,7 +27,19 @@ const defaultPayload = {
   customer: { id: "cus_2048", email: "alex@example.com" }
 };
 
-function App() {
+function RootApp() {
+  const [pathname, setPathname] = useState(() => window.location.pathname);
+
+  useEffect(() => {
+    const syncPath = () => setPathname(window.location.pathname);
+    window.addEventListener("popstate", syncPath);
+    return () => window.removeEventListener("popstate", syncPath);
+  }, []);
+
+  return pathname === "/app" || pathname.startsWith("/app/") ? <Dashboard /> : <LandingPage publicDemo={PUBLIC_DEMO} />;
+}
+
+function Dashboard() {
   const [page, setPage] = useState(() => location.hash.slice(1) || "overview");
   const [summary, setSummary] = useState(null);
   const [endpoints, setEndpoints] = useState([]);
@@ -110,7 +125,7 @@ function App() {
 
         <div className="workspaceSwitch">
           <span className="workspaceAvatar">S</span>
-          <span className="workspaceCopy"><strong>Sandbox workspace</strong><small>Local development</small></span>
+          <span className="workspaceCopy"><strong>HookGuard workspace</strong><small>{import.meta.env.PROD ? "Shared product demo" : "Local development"}</small></span>
           <Icon name="chevron" />
         </div>
 
@@ -135,7 +150,7 @@ function App() {
             <ServiceRow label="Postgres" status={serviceHealth?.postgres} />
             <ServiceRow label="Redis" status={serviceHealth?.redis} />
           </div>
-          <div className="sidebarFoot"><span>HOOKGUARD / LOCAL</span><span>v1.0.0</span></div>
+          <div className="sidebarFoot"><span>HOOKGUARD / {import.meta.env.PROD ? "DEMO" : "LOCAL"}</span><span>v1.0.0</span></div>
         </div>
       </aside>
 
@@ -150,6 +165,7 @@ function App() {
         </header>
 
         <main className="pageContent">
+          {PUBLIC_DEMO && <div className="publicDemoNotice"><Icon name="info" /><span><strong>Shared public demo.</strong> No sign-in is required. Use synthetic data only; changes are visible to every visitor and delivery is limited to the built-in receiver.</span></div>}
           {message && <div className={`toast ${message.kind}`} role="status"><Icon name={message.kind === "error" ? "warning" : "check"} /><span>{message.text}</span><button aria-label="Dismiss" onClick={() => setMessage(null)}>×</button></div>}
           {page === "overview" && <Overview summary={summary} events={events} analytics={analytics} serviceHealth={serviceHealth} loading={loading} lastSync={lastSync} onNavigate={navigate} onSelectEvent={(id) => { setSelectedEventId(id); navigate("events"); }} />}
           {page === "endpoints" && <EndpointsPage endpoints={endpoints} analytics={analytics} onRefresh={refresh} onMessage={setMessage} />}
@@ -290,7 +306,7 @@ function EndpointForm({ onSubmit }) {
   return <form className="formStack" onSubmit={(event) => { event.preventDefault(); void onSubmit(new FormData(event.currentTarget)); }}>
     <label>Endpoint name<input name="name" defaultValue="Order notification receiver" required minLength="2" maxLength="80" /></label>
     <div className="fieldLabel">Destination type</div>
-    <div className="choiceRow"><button type="button" className={destinationType === "simulator" ? "choice active" : "choice"} onClick={() => setDestinationType("simulator")}><Icon name="flask" /><span><strong>Failure Lab receiver</strong><small>Local and safe for demos</small></span></button><button type="button" className={destinationType === "custom" ? "choice active" : "choice"} onClick={() => setDestinationType("custom")}><Icon name="globe" /><span><strong>External HTTPS URL</strong><small>Public HTTPS destinations only</small></span></button></div>
+    <div className="choiceRow"><button type="button" className={destinationType === "simulator" ? "choice active" : "choice"} onClick={() => setDestinationType("simulator")}><Icon name="flask" /><span><strong>Failure Lab receiver</strong><small>{PUBLIC_DEMO ? "Built-in shared demo destination" : "Local and safe for demos"}</small></span></button>{!PUBLIC_DEMO && <button type="button" className={destinationType === "custom" ? "choice active" : "choice"} onClick={() => setDestinationType("custom")}><Icon name="globe" /><span><strong>External HTTPS URL</strong><small>Public HTTPS destinations only</small></span></button>}</div>
     <input type="hidden" name="destinationType" value={destinationType} />
     {destinationType === "custom" && <label>Destination URL<input name="targetUrl" placeholder="https://api.example.com/webhooks" required type="url" /><small className="fieldHint">Local, private, and reserved network addresses are blocked.</small></label>}
     <div className="formColumns"><label>Max attempts<input name="maxAttempts" type="number" min="1" max="8" defaultValue="3" /></label><label>Backoff base (ms)<input name="backoffBaseMs" type="number" min="100" max="60000" defaultValue="700" /></label><label>Backoff cap (ms)<input name="backoffCapMs" type="number" min="100" max="300000" defaultValue="6000" /></label><label>Jitter (%)<input name="jitterPercent" type="number" min="0" max="50" defaultValue="20" /></label></div>
@@ -484,7 +500,7 @@ function Quickstart({ quickstart, endpoints, onMessage }) {
   const [copied, setCopied] = useState("");
   const endpointId = quickstart?.demoEndpointId || endpoints[0]?.id || "<endpoint_id>";
   const apiUrl = quickstart?.apiBaseUrl || "http://127.0.0.1:3000";
-  const apiKey = quickstart?.apiKey || "<configure HOOKGUARD_API_KEY>";
+  const apiKey = quickstart?.apiKey || (PUBLIC_DEMO ? "<YOUR_HOOKGUARD_API_KEY>" : "<configure HOOKGUARD_API_KEY>");
   const curl = [
     `curl ${apiUrl}/v1/events`,
     `-H 'Authorization: Bearer ${apiKey}'`,
@@ -500,10 +516,10 @@ function Quickstart({ quickstart, endpoints, onMessage }) {
 
   return <>
     <PageHeading eyebrow="Developer docs" title="API quickstart" description="Send your first event in one request, then verify signed deliveries at your endpoint." actions={<span className="tinyCode">REST API · V1</span>} />
-    <div className="quickstartLayout"><div className="quickstartMain"><section className="surface quickCard"><div className="stepNumber">01</div><div className="quickContent"><p className="eyebrow">Credentials</p><h2>Use the local sandbox key</h2><p>This test key is for the self-hosted local demo. Set <code>HOOKGUARD_API_KEY</code> in your environment before sharing a deployment.</p><SecretValue value={apiKey} onCopied={() => copy(apiKey, "API key")} /><div className="credentialFoot"><span><Icon name="shield" /> Bearer token required on <code>/v1/events</code></span><span className="envChip">LOCAL ONLY</span></div></div></section>
+    <div className="quickstartLayout"><div className="quickstartMain"><section className="surface quickCard"><div className="stepNumber">01</div><div className="quickContent"><p className="eyebrow">Credentials</p><h2>{PUBLIC_DEMO ? "Producer API credentials" : "Use the local sandbox key"}</h2><p>{PUBLIC_DEMO ? <>The producer route requires <code>HOOKGUARD_API_KEY</code>. Keep that secret in your producer's server-side environment; the public demo never exposes it in the browser.</> : <>This test key is for the self-hosted local demo. Set <code>HOOKGUARD_API_KEY</code> in your environment before sharing a deployment.</>}</p><SecretValue value={apiKey} onCopied={() => copy(apiKey, "API key")} /><div className="credentialFoot"><span><Icon name="shield" /> Bearer token required on <code>/v1/events</code></span><span className="envChip">{PUBLIC_DEMO ? "SERVER SECRET" : "LOCAL ONLY"}</span></div></div></section>
       <section className="surface quickCard"><div className="stepNumber">02</div><div className="quickContent"><p className="eyebrow">Create event</p><h2>Queue a signed webhook</h2><p>HookGuard returns after persistence. A separate worker signs and delivers the event in the background.</p><CodeBlock language="cURL" code={curl} onCopy={() => copy(curl, "cURL request")} copied={copied === "cURL request"} /><div className="quickFacts"><span><Icon name="check" /> 202 Accepted</span><span><Icon name="check" /> Idempotency key</span><span><Icon name="check" /> Exponential retry</span></div></div></section>
       <section className="surface quickCard"><div className="stepNumber">03</div><div className="quickContent"><p className="eyebrow">Verify receiver</p><h2>Validate the signature</h2><p>HookGuard signs <code>timestamp + raw body</code>. Read the raw request bytes before JSON parsing and compare signatures in constant time.</p><CodeBlock language="Node.js" code={nodeSnippet} onCopy={() => copy(nodeSnippet, "Node.js verifier")} copied={copied === "Node.js verifier"} /></div></section></div>
-      <aside className="quickSidebar"><section className="surface endpointQuick"><div className="sectionHead"><div><p className="eyebrow">Ready to use</p><h2>Destination</h2></div><Icon name="plug" /></div><p className="endpointGuide">Create one in <strong>Endpoints → Add endpoint</strong>. Choose the local simulator for a safe demo or enter a public HTTPS receiver. Save the signing secret shown after creation.</p>{endpoints.slice(0, 4).map((endpoint) => <div className="quickEndpoint" key={endpoint.id}><span className="legendDot green" /><div><strong>{endpoint.name}</strong><small><code>{endpoint.id}</code></small></div><CopyButton value={endpoint.id} /></div>)}{!endpoints.length && <p className="muted">Create an endpoint before sending events.</p>}</section>
+      <aside className="quickSidebar"><section className="surface endpointQuick"><div className="sectionHead"><div><p className="eyebrow">Ready to use</p><h2>Destination</h2></div><Icon name="plug" /></div><p className="endpointGuide">{PUBLIC_DEMO ? <>Create one in <strong>Endpoints → Add endpoint</strong>. The public demo delivers only to its built-in receiver. Save the signing secret shown after creation.</> : <>Create one in <strong>Endpoints → Add endpoint</strong>. Choose the local simulator for a safe demo or enter a public HTTPS receiver. Save the signing secret shown after creation.</>}</p>{endpoints.slice(0, 4).map((endpoint) => <div className="quickEndpoint" key={endpoint.id}><span className="legendDot green" /><div><strong>{endpoint.name}</strong><small><code>{endpoint.id}</code></small></div><CopyButton value={endpoint.id} /></div>)}{!endpoints.length && <p className="muted">Create an endpoint before sending events.</p>}</section>
         <section className="surface headerRef"><p className="eyebrow">Delivery headers</p><div><code>x-hookguard-event-id</code><span>Stable event identifier</span></div><div><code>x-idempotency-key</code><span>Deduplicate business effects</span></div><div><code>x-hookguard-attempt</code><span>Attempt number in current run</span></div><div><code>x-hookguard-signature</code><span>Timestamp + HMAC-SHA256</span></div><div><code>x-hookguard-timestamp</code><span>Unix time for replay checks</span></div></section>
         <div className="quickWarning"><Icon name="info" /><span>The sample receiver is a local demo. Use HTTPS, secret rotation, timestamp validation, and idempotent processing for real destinations.</span></div></aside></div>
   </>;
@@ -613,7 +629,8 @@ function Icon({ name }) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
+  const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
+  const response = await fetch(`${apiBaseUrl}${path}`, {
     method: options.method || "GET",
     headers: options.body ? { "content-type": "application/json" } : undefined,
     body: options.body ? JSON.stringify(options.body) : undefined
@@ -637,4 +654,4 @@ function scenarioDescription(mode, failures, status, delay) {
 }
 function groupBy(values, key) { return values.reduce((groups, value) => { const group = key(value); (groups[group] ||= []).push(value); return groups; }, {}); }
 
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(<RootApp />);

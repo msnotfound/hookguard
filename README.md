@@ -134,7 +134,7 @@ The OpenAPI contract is in [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Reliability model
 
-- **Transactional outbox:** the event and queue handoff intent commit in one Postgres transaction. API and worker processes publish pending outbox rows to BullMQ. Stable job IDs make repeat publishing safe; stale delivery claims are recovered through a fresh outbox row after a worker crash.
+- **Transactional outbox:** the event and queue handoff intent commit in one Postgres transaction. The worker process publishes pending outbox rows to BullMQ. Stable job IDs make repeat publishing safe; stale delivery claims are recovered through a fresh outbox row after a worker crash.
 - **At-least-once delivery:** receivers can see repeated requests after retries or replay. HookGuard does not promise exactly-once effects.
 - **Idempotency:** the producer key prevents duplicate event creation for the same endpoint. The sample receiver stores one business receipt per endpoint and event ID.
 - **Retry policy:** endpoint settings include bounded attempts, exponential backoff, a cap, and jitter. Events that exhaust their attempts remain available for inspection and replay.
@@ -142,12 +142,40 @@ The OpenAPI contract is in [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Set a new `HOOKGUARD_API_KEY`, `HOOKGUARD_SECRET_KEY`, and `DEMO_WEBHOOK_SECRET` before sharing the local service. Keep `HOOKGUARD_SECRET_KEY` stable; it encrypts endpoint signing secrets at rest. The default API key is intentionally exposed in the local quickstart screen and is not suitable for an internet-facing deployment. The dashboard itself is a single-workspace local demo without user login, billing, or team permissions.
+Copy `.env.example` to `.env`. Set a new `HOOKGUARD_API_KEY`, `HOOKGUARD_SECRET_KEY`, and `DEMO_WEBHOOK_SECRET` before sharing the local service. Keep `HOOKGUARD_SECRET_KEY` stable; it encrypts endpoint signing secrets at rest. The default API key is intentionally exposed in the local quickstart screen and is not suitable for an internet-facing deployment.
+
+## Public portfolio deployment
+
+The included deployment uses Vercel for the landing page, static dashboard, and Express API function. A separate, always-on worker is required for BullMQ delivery. PostgreSQL and a Redis-compatible service must be reachable from both Vercel and the worker. The worker blueprint in `render.yaml` uses Render's paid Starter plan and prompts for connection strings and secrets.
+
+This is a shared, unauthenticated portfolio demo. Every visitor uses the same database and can change demo state. Production mode limits endpoint destinations to the built-in receiver and caps dashboard writes at 20 requests per minute per IP. Use synthetic data only. Do not connect real customer systems or place real credentials in the demo.
+
+1. Create a managed PostgreSQL database and a Redis-compatible service that supports BullMQ blocking connections. Keep their TLS-enabled connection URLs for the next steps.
+2. Import `msnotfound/hookguard` into Vercel from the `main` branch. The repository's `vercel.json` sets the Vite build and output directory. Add these production environment variables in Vercel:
+
+   | Variable | Value |
+   | --- | --- |
+   | `DATABASE_URL` | PostgreSQL connection URL. Use the provider's pooled URL for serverless access when available. |
+   | `REDIS_URL` | Redis-compatible TLS connection URL. |
+   | `HOOKGUARD_SECRET_KEY` | A stable random secret used to encrypt endpoint secrets. |
+   | `HOOKGUARD_API_KEY` | A separate random key for the producer `POST /v1/events` route. Keep it server-side. |
+   | `DEMO_WEBHOOK_SECRET` | A stable random secret for the built-in receiver. |
+   | `HOOKGUARD_PUBLIC_API_URL` | The deployed base URL, for example `https://your-project.vercel.app`. |
+   | `HOOKGUARD_PUBLIC_DEMO` | `true`, enabling the server-side shared-demo destination and write limits. |
+   | `VITE_PUBLIC_DEMO` | `true`, so the dashboard shows its shared-demo limits in the browser. |
+   | `PG_POOL_MAX` | `1` |
+
+   Generate a random hex secret with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. Use separate values for the encryption key, producer API key, and demo receiver secret. Do not commit them.
+3. Deploy the worker blueprint from `render.yaml`. Supply the same `DATABASE_URL`, `REDIS_URL`, `HOOKGUARD_SECRET_KEY`, `DEMO_WEBHOOK_SECRET`, and `HOOKGUARD_PUBLIC_API_URL` values. Set `PG_POOL_MAX=1` if the provider has a low connection limit. The worker runs the schema migration on startup, then starts the outbox publisher and delivery consumer.
+4. Redeploy Vercel after adding its environment variables. Open `https://your-project.vercel.app` for the landing page, `/app` for the dashboard, and `/api/health` to check Postgres, Redis, and the worker heartbeat. The health endpoint reports `degraded` until the worker is online.
+
+The Vercel function serves API requests only; it does not run migrations or the long-lived delivery worker. Do not remove the separate worker or point the seeded receiver at a localhost URL. Vercel's deployment boundaries are described in its [Express](https://vercel.com/docs/frameworks/backend/express) and [Vite](https://vercel.com/docs/frameworks/frontend/vite) guides; the persistent worker uses Render's [Background Worker](https://render.com/docs/background-workers) service type.
 
 ## Project structure
 
 ```text
-backend/api/       Express API and verified demo receiver
+api/               Vercel function entry point
+backend/api/       Express API app, local server, verified demo receiver
 backend/worker/    BullMQ delivery worker
 backend/shared/    Postgres repository, migrations, outbox, signing, safety
 frontend/          React + Vite product console
